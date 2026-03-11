@@ -2,9 +2,8 @@
 Асинхронная работа с SQLite базой данных
 """
 import aiosqlite
-import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -45,7 +44,7 @@ class Database:
                     first_seen TIMESTAMP NOT NULL,
                     last_seen TIMESTAMP NOT NULL,
                     is_active INTEGER DEFAULT 1,
-                    additional_data TEXT  -- JSON для дополнительных данных
+                    additional_data TEXT
                 )
             ''')
             
@@ -60,7 +59,7 @@ class Database:
                 )
             ''')
             
-            # Таблица сообщений (для статистики)
+            # Таблица сообщений
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,7 +75,7 @@ class Database:
                 )
             ''')
             
-            # Индексы для быстрого поиска
+            # Индексы
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)')
@@ -172,44 +171,6 @@ class Database:
                 )
             return None
     
-    async def get_all_users(self, active_only: bool = True) -> List[User]:
-        """
-        Получение всех пользователей
-        
-        Args:
-            active_only: Только активные пользователи
-        
-        Returns:
-            List[User]: Список пользователей
-        """
-        async with self.get_connection() as conn:
-            if active_only:
-                cursor = await conn.execute(
-                    'SELECT * FROM users WHERE is_active = 1 ORDER BY last_seen DESC'
-                )
-            else:
-                cursor = await conn.execute(
-                    'SELECT * FROM users ORDER BY last_seen DESC'
-                )
-            
-            rows = await cursor.fetchall()
-            users = []
-            
-            for row in rows:
-                users.append(User(
-                    id=row['id'],
-                    username=row['username'],
-                    first_name=row['first_name'],
-                    last_name=row['last_name'],
-                    language_code=row['language_code'],
-                    is_bot=bool(row['is_bot']),
-                    first_seen=datetime.fromisoformat(row['first_seen']),
-                    last_seen=datetime.fromisoformat(row['last_seen']),
-                    is_active=bool(row['is_active'])
-                ))
-            
-            return users
-    
     async def get_users_count(self, active_only: bool = True) -> int:
         """
         Получение количества пользователей
@@ -234,13 +195,136 @@ class Database:
             return row['count'] if row else 0
     
     async def deactivate_user(self, user_id: int) -> None:
-        """Деактивация пользователя (например, если заблокировал бота)"""
+        """Деактивация пользователя"""
         async with self.get_connection() as conn:
             await conn.execute(
                 'UPDATE users SET is_active = 0 WHERE id = ?',
                 (user_id,)
             )
             logger.info(f"Пользователь {user_id} деактивирован")
+    
+    # ========== НОВЫЕ МЕТОДЫ ДЛЯ АДМИНКИ ==========
+    
+    async def get_users_by_status(self) -> Dict[str, int]:
+        """
+        Получение статистики по статусам пользователей
+        
+        Returns:
+            Dict[str, int]: Словарь со статистикой
+        """
+        async with self.get_connection() as conn:
+            stats = {}
+            
+            # Все пользователи
+            cursor = await conn.execute('SELECT COUNT(*) as count FROM users')
+            row = await cursor.fetchone()
+            stats['total'] = row['count'] if row else 0
+            
+            # Активные
+            cursor = await conn.execute('SELECT COUNT(*) as count FROM users WHERE is_active = 1')
+            row = await cursor.fetchone()
+            stats['active'] = row['count'] if row else 0
+            
+            # Неактивные
+            cursor = await conn.execute('SELECT COUNT(*) as count FROM users WHERE is_active = 0')
+            row = await cursor.fetchone()
+            stats['inactive'] = row['count'] if row else 0
+            
+            # Боты
+            cursor = await conn.execute('SELECT COUNT(*) as count FROM users WHERE is_bot = 1')
+            row = await cursor.fetchone()
+            stats['bots'] = row['count'] if row else 0
+            
+            # За последние 24 часа
+            cursor = await conn.execute('''
+                SELECT COUNT(*) as count FROM users 
+                WHERE datetime(last_seen) > datetime('now', '-1 day')
+            ''')
+            row = await cursor.fetchone()
+            stats['last_24h'] = row['count'] if row else 0
+            
+            # За последнюю неделю
+            cursor = await conn.execute('''
+                SELECT COUNT(*) as count FROM users 
+                WHERE datetime(last_seen) > datetime('now', '-7 days')
+            ''')
+            row = await cursor.fetchone()
+            stats['last_week'] = row['count'] if row else 0
+            
+            # За последний месяц
+            cursor = await conn.execute('''
+                SELECT COUNT(*) as count FROM users 
+                WHERE datetime(last_seen) > datetime('now', '-30 days')
+            ''')
+            row = await cursor.fetchone()
+            stats['last_month'] = row['count'] if row else 0
+            
+            return stats
+    
+    async def get_users_with_pagination(self, page: int = 1, per_page: int = 10) -> Dict[str, Any]:
+        """
+        Получение пользователей с пагинацией
+        
+        Args:
+            page: Номер страницы
+            per_page: Пользователей на странице
+        
+        Returns:
+            Dict: Словарь с пользователями и информацией о пагинации
+        """
+        offset = (page - 1) * per_page
+        
+        async with self.get_connection() as conn:
+            # Получаем общее количество
+            cursor = await conn.execute('SELECT COUNT(*) as count FROM users')
+            total_row = await cursor.fetchone()
+            total_count = total_row['count'] if total_row else 0
+            
+            # Получаем пользователей для текущей страницы
+            cursor = await conn.execute('''
+                SELECT id, username, first_name, last_name, language_code, 
+                       is_bot, first_seen, last_seen, is_active 
+                FROM users 
+                ORDER BY last_seen DESC 
+                LIMIT ? OFFSET ?
+            ''', (per_page, offset))
+            
+            rows = await cursor.fetchall()
+            users = []
+            
+            for row in rows:
+                users.append({
+                    'id': row['id'],
+                    'username': row['username'],
+                    'first_name': row['first_name'],
+                    'last_name': row['last_name'],
+                    'language_code': row['language_code'],
+                    'is_bot': bool(row['is_bot']),
+                    'first_seen': row['first_seen'],
+                    'last_seen': row['last_seen'],
+                    'is_active': bool(row['is_active'])
+                })
+            
+            total_pages = (total_count + per_page - 1) // per_page if total_count > 0 else 1
+            
+            return {
+                'users': users,
+                'total': total_count,
+                'page': page,
+                'per_page': per_page,
+                'total_pages': total_pages
+            }
+    
+    async def get_all_active_users_for_broadcast(self) -> List[int]:
+        """Получение всех активных пользователей для рассылки"""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute('''
+                SELECT id FROM users 
+                WHERE is_active = 1 AND is_bot = 0
+                ORDER BY last_seen DESC
+            ''')
+            rows = await cursor.fetchall()
+            return [row['id'] for row in rows]
     
     # ========== РАБОТА С ЧАТАМИ ==========
     
@@ -300,12 +384,12 @@ class Database:
     
     # ========== СТАТИСТИКА ==========
     
-    async def get_statistics(self) -> Dict[str, Any]:
+    async def get_statistics(self) -> Dict[str, int]:
         """
         Получение статистики по базе данных
         
         Returns:
-            Dict[str, Any]: Словарь со статистикой
+            Dict[str, int]: Словарь со статистикой
         """
         async with self.get_connection() as conn:
             stats = {}
@@ -333,7 +417,7 @@ class Database:
             # Пользователи за последние 24 часа
             cursor = await conn.execute('''
                 SELECT COUNT(*) as count FROM users 
-                WHERE last_seen > datetime('now', '-1 day')
+                WHERE datetime(last_seen) > datetime('now', '-1 day')
             ''')
             row = await cursor.fetchone()
             stats['users_last_24h'] = row['count'] if row else 0

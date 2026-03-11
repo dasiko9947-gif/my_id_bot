@@ -46,6 +46,13 @@ TERMS_MESSAGE = (
     "✅ Используя бота, вы соглашаетесь с хранением вашего ID для получения служебных сообщений.\n"
 )
 
+@router.message(Command("admin"))
+async def debug_admin_command(message: Message):
+    """Временный обработчик для отладки"""
+    await message.answer("❌ Команда /admin перехвачена основным обработчиком!")
+    # Не пропускаем дальше
+    return
+
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Только приветствие и ID"""
@@ -166,8 +173,13 @@ async def successful_payment_handler(message: Message):
 @router.message()
 async def handle_message(message: Message):
     """
-    На ЛЮБОЕ сообщение - приглашение + ID
+    На ЛЮБОЕ сообщение - приглашение + ID (кроме команд)
     """
+    # Игнорируем все команды (начинаются с /)
+    if message.text and message.text.startswith('/'):
+        logger.info(f"Игнорируем команду: {message.text}")
+        return
+    
     user = message.from_user
     chat = message.chat
     
@@ -199,15 +211,12 @@ async def handle_message(message: Message):
     # Если это пересланное сообщение - показываем ID автора
     if message.forward_from:
         forward_user = message.forward_from
-        # У пересланных сообщений ID всегда доступен, даже если скрыт
         response_parts.append(f"🔄 ID автора: <code>{forward_user.id}</code>")
         logger.info(f"Пересланное сообщение от {forward_user.id}")
     elif message.forward_from_chat:
-        # Если переслано из канала или группы
         forward_chat = message.forward_from_chat
         response_parts.append(f"📢 Переслано из канала/группы: <code>{forward_chat.id}</code>")
     elif message.forward_sender_name:
-        # Если пользователь скрыл свой ID при пересылке
         response_parts.append("🔒 Пользователь скрыл свой ID при пересылке")
     
     # Если это ответ на сообщение - показываем ID автора
@@ -217,7 +226,6 @@ async def handle_message(message: Message):
             response_parts.append(f"💬 ID автора: <code>{reply_user.id}</code>")
             logger.info(f"Ответ на сообщение от {reply_user.id}")
     elif message.reply_to_message and message.reply_to_message.forward_sender_name:
-        # Если в ответе пользователь скрыл ID
         response_parts.append("🔒 Пользователь, на которого вы ответили, скрыл свой ID")
     
     # Объединяем все части ответа
@@ -228,6 +236,5 @@ async def handle_message(message: Message):
         await message.answer(response, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Ошибка при отправке: {e}")
-        # Если ошибка с HTML - отправляем без форматирования
         clean_response = response.replace('<code>', '').replace('</code>', '')
         await message.answer(clean_response)

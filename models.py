@@ -31,8 +31,10 @@ class User:
         if seen_time is None:
             seen_time = datetime.now()
         
-        # Безопасно получаем last_name (может быть None)
-        last_name = telegram_user.last_name if hasattr(telegram_user, 'last_name') else None
+        # Безопасно получаем last_name
+        last_name = None
+        if hasattr(telegram_user, 'last_name'):
+            last_name = telegram_user.last_name
         
         return cls(
             id=telegram_user.id,
@@ -42,7 +44,8 @@ class User:
             language_code=telegram_user.language_code,
             is_bot=telegram_user.is_bot,
             first_seen=seen_time,
-            last_seen=seen_time
+            last_seen=seen_time,
+            is_active=True
         )
 
 @dataclass

@@ -21,6 +21,9 @@ class Config:
         # ID администратора (опционально)
         admin_id = os.getenv('ADMIN_ID')
         self.ADMIN_ID: Optional[int] = int(admin_id) if admin_id and admin_id.isdigit() else None
+        
+        # Выводим в лог для проверки
+        print(f"Загружен ADMIN_ID: {self.ADMIN_ID}")
     
     def validate(self) -> bool:
         """Проверка наличия обязательных параметров"""
